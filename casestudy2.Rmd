@@ -1,0 +1,135 @@
+---
+title: "Relationship between suPAR and GFR"
+author: "Miriam Hu"
+date: "June 28, 2018"
+output: pdf_document
+---
+
+```{r setup, include = FALSE}
+library(knitr)
+  opts_chunk$set(echo = TRUE, cache = TRUE, autodep = TRUE, 
+                 message = FALSE, warning = FALSE)
+library(tidyverse)
+library(readxl)
+library(GGally)
+library(gridExtra)
+library(e1071)
+```
+
+# Overview of the Clinical Issue
+
+Chronic kidney disease (CKD)
+
+# Summary of Patient Characteristics at Baseline
+
+# Research Objectives
+
+```{r load-data}
+GFR <- read_excel("SIBS_GFRdata.xlsx", na = ".")
+
+# Make indicator for whether patient has CKD at enrollment
+GFR <- mutate(GFR, BL_CKD = ifelse(BL_GFR < 60, "Yes", "No"))
+GFR <- mutate(GFR, FU_CKD = ifelse(BL_GFR < 60, "Yes", "No"))
+
+# Make indicator for whether patient's CKD worsened at follow-up
+# Recode baseline CKD stages as numbers:
+GFR <- mutate(GFR, BL_num_CKD = BL_GFR)
+GFR$BL_num_CKD <- ifelse(GFR$BL_num_CKD >= 120, 0,
+                  ifelse(GFR$BL_num_CKD >= 90, 1,
+                  ifelse(GFR$BL_num_CKD >= 60, 2,
+                  ifelse(GFR$BL_num_CKD >= 45, 3,
+                  ifelse(GFR$BL_num_CKD >= 30, 4,
+                  ifelse(GFR$BL_num_CKD >= 15, 5, 6))))))
+
+# Recode follow-up CKD stages as numbers
+GFR <- mutate(GFR, FU_num_CKD = FU_GFR)
+GFR$FU_num_CKD <- ifelse(GFR$FU_num_CKD >= 120, 0,
+                  ifelse(GFR$FU_num_CKD >= 90, 1,
+                  ifelse(GFR$FU_num_CKD >= 60, 2,
+                  ifelse(GFR$FU_num_CKD >= 45, 3,
+                  ifelse(GFR$FU_num_CKD >= 30, 4,
+                  ifelse(GFR$FU_num_CKD >= 15, 5, 6))))))
+
+GFR <- mutate(GFR, progression = FU_num_CKD - BL_num_CKD) # if positive, CKD got worse
+GFR$progression <- ifelse(GFR$progression > 0, 1, 0) # 1 for worse; 0 for same or better
+```
+
+## 1. What is the relationship between suPAR and GFR at baseline?
+
+```{r obj1-graphs, echo = FALSE}
+has.ckd.scatter <- GFR %>% filter(BL_CKD == "Yes") %>% ggplot(aes(x = suPARpgml, y = BL_GFR)) + geom_point() + ggtitle("Patients with CKD at enrollment") + labs(x = "suPAR", y = "GFR")
+
+no.ckd.scatter <- GFR %>% filter(BL_CKD == "No") %>% ggplot(aes(x = suPARpgml, y = BL_GFR)) + geom_point() + ggtitle("No CKD at enrollment") + labs(x = "suPAR", y = "GFR")
+
+grid.arrange(has.ckd.scatter, no.ckd.scatter, top = "Relationship between suPAR and baseline GFR")
+```
+
+```{r obj1-corr}
+# Spearman's correlation for suPAR and baseline GFR (all patients):
+cor(GFR$suPARpgml, GFR$BL_GFR, method = "spearman")
+
+# Spearman's correlation among those who have CKD at enrollment:
+cor(GFR$suPARpgml[GFR$BL_CKD == "Yes"], GFR$BL_GFR[GFR$BL_CKD == "Yes"], method = "spearman")
+
+# Spearman's correlation among those who do not have CKD at enrollment:
+cor(GFR$suPARpgml[GFR$BL_CKD == "No"], GFR$BL_GFR[GFR$BL_CKD == "No"], method = "spearman")
+```
+
+## 2. Can suPAR levels at baseline predict decline of kidney function at one year?
+
+```{r obj2}
+# Create a new variable for the difference in GFR (follow-up – baseline):
+GFR$diff_GFR <- GFR$FU_GFR - GFR$BL_GFR # positive indicates improvement
+
+mod2 <- lm(diff_GFR ~ suPARpgml + BL_CKD, data = GFR)
+mod2.inter <- lm(diff_GFR ~ suPARpgml + BL_CKD + suPARpgml*BL_CKD, data = GFR)
+```
+
+```{r obj2-assumptions-graphs, echo = FALSE}
+diff_vs_suPAR <- GFR %>% ggplot(aes(x = suPARpgml, y = diff_GFR)) + geom_point() + ggtitle("Diff in GFR vs. suPAR") + labs(x = "suPAR",y = "Difference in GFR")
+
+mod2.resids <- mod2.inter %>% ggplot(aes(x = .fitted, y = .stdresid)) + geom_point() + ggtitle("Residual plot") + labs(x = "Fitted values", y = "Standardized residuals")
+
+mod2.hist <- mod2.inter %>% ggplot(aes(.stdresid)) + geom_histogram(bins = 20) + ggtitle("Histogram of residuals") + labs(x = "Standardized residuals", y = "Frequency")
+
+mod2.qq <- mod2.inter %>%  ggplot(aes(sample = .stdresid)) + stat_qq() + stat_qq_line() + ggtitle("q-q plot") + labs(x = "Sample", y = "Theoretical")
+
+grid.arrange(diff_vs_suPAR, mod2.resids, mod2.hist, mod2.qq, top = "Check assumptions of linear regression:")
+```
+
+```{r obj2-normality-checklist, include = FALSE}
+rstandard(mod2.inter) %>% mean()
+rstandard(mod2.inter) %>% median()
+rstandard(mod2.inter) %>% skewness()
+rstandard(mod2.inter) %>% kurtosis()
+rstandard(mod2.inter) %>% shapiro.test()
+```
+
+We also need to check to make sure the residuals are normally distributed:
+
+* __Unimodal:__ Yes, the distribution of the standardized residuals appears unimodal, according to the histogram. We can see a slight dip near the center, but it's not large enough to cause concern.
+* __Mean:__ $0.00038$
+* __Median:__ $-0.0011$
+* __Skewness:__ 0.30
+    + This indicates that the distribution of the standardized residuals is approximately symmetric, which is supported by the mean and median being extremely close.
+* __Kurtosis:__ $4.23$
+    + This indicates that the distribution of the standardized residuals is heavy-tailed.
+* __Shapiro-Wilk test:__ p-value = $1.40 \times 10^{-10}$
+    + Since the p-value is very small, we would reject the null hypothesis that the standardized residuals are normally distributed. However, the Shapiro-Wilk test is extremely sensitive when the number of observations is large. Instead, we examine the q-q plot.
+
+
+## Can suPAR measured at baseline predict the risk of CKD stage progression?
+
+```{r obj3}
+log1 <- glm(progression ~ suPARpgml, data = GFR, family = binomial)
+```
+
+## Are any variables associated with CKD stage progression?
+
+```{r obj4}
+log2 <- glm(progression ~ . -BL_CKD -FU_CKD -BL_num_CKD -FU_num_CKD -progression, data = GFR, family = binomial)
+```
+
+# Additional Questions
+
+* Were the patients treated? (early detection)
